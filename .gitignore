@@ -1,0 +1,98 @@
+# === secrets / env — NUNCA commitar o real, só .example ===
+.env
+*.pem
+*.key
+*.crt
+config/airflow/connections.json
+config/airflow/variables.json
+!config/airflow/*.example.json
+# NOTA: config/prometheus/prometheus.yml é versionado de propósito;
+# scripts/bootstrap.sh rotaciona o bearer_token do MinIO in-place.
+# Aceite o diff local após o bootstrap, não commite o token rotacionado.
+
+# === python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+wheels/
+*.whl
+pip-log.txt
+pip-delete-this-directory.txt
+
+# === venv / package managers ===
+.venv/
+venv/
+ENV/
+env/
+.python-version.local
+uv.lock.keep
+
+# === tools: ruff / black / flake8 / mypy / pytest / vulture / coverage ===
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+junit.xml
+pytestdebug.log
+
+# === airflow ===
+logs/
+*.log
+airflow.cfg
+airflow.db
+airflow-webserver.pid
+airflow-scheduler.pid
+airflow-*.pid
+standalone_admin_password.txt
+
+# === data / tmp / duckdb (parity Mage) ===
+.mage_data/
+tmp_mage/
+duckdb_spill/
+tmp/
+temp/
+data/
+warehouse/
+*.parquet
+*.duckdb*
+*.motherduck.db
+*.sqlite
+*.sqlite3
+*.db
+*.csv
+*.tsv
+*.zip
+*.tar.gz
+dump.rdb
+
+# === docker / local overrides ===
+docker-compose.override.yml
+docker-compose.local.yml
+
+# === test fixtures — nunca ignorar (use git add -f se um padrão acima pegar) ===
+!tests/**/*.csv
+!tests/**/*.tsv
+!tests/**/*.parquet
+!tests/**/*.zip
+!tests/**/*.db
+!tests/**/*.sqlite*
+
+# === os / ide / editors ===
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
