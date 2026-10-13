@@ -1,0 +1,29 @@
+{
+  "_doc": "Template versionado. O bootstrap gera connections.json real a partir do .env (nunca commite o real). Chaves espelham o seed antigo via CLI.",
+  "minio_s3": {
+    "conn_type": "aws",
+    "login": "minioadmin",
+    "password": "minioadmin123",
+    "extra_dejson": {
+      "endpoint_url": "http://minio:9000"
+    }
+  },
+  "trino_default": {
+    "conn_type": "trino",
+    "host": "trino",
+    "port": 8080,
+    "login": "admin",
+    "extra_dejson": {
+      "catalog": "iceberg",
+      "schema": "silver"
+    }
+  },
+  "postgres_organizacao": {
+    "conn_type": "postgres",
+    "host": "postgres",
+    "port": 5432,
+    "login": "organizacao_user",
+    "password": "organizacao_password",
+    "schema": "organizacaodb"
+  }
+}

@@ -1,0 +1,218 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow_db}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow_db"]
+      interval: 5s
+      retries: 10
+    mem_limit: 2g
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      retries: 5
+    mem_limit: 2g
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin123};
+      mc mb -p local/organizacao || true;
+      mc mb -p local/organizacao/warehouse || true;
+      echo smoke-init-ok;
+      "
+
+  hive-metastore:
+    image: apache/hive:4.0.0
+    environment:
+      SERVICE_NAME: metastore
+      HADOOP_CLASSPATH: /opt/hadoop/share/hadoop/tools/lib/*
+      DB_DRIVER: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: hive_metastore_db
+      DB_USER: hive
+      DB_PASSWORD: hive
+      HIVE_CUSTOM_CONF_DIR: /custom-conf
+    volumes:
+      - ./config/hive/metastore-site.xml:/opt/hive/conf/metastore-site.xml:ro
+      - ./config/hive/core-site.xml:/opt/hive/conf/core-site.xml:ro
+      - ./config/hive/jars/postgresql-42.7.3.jar:/opt/hive/lib/postgresql-42.7.3.jar:ro
+    ports:
+      - "9083:9083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 2g
+
+  trino:
+    image: trinodb/trino:455
+    volumes:
+      - ./config/trino/catalog:/etc/trino/catalog:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      - hive-metastore
+      - minio
+    mem_limit: 6g
+
+  airflow-init:
+    image: poc_airflow-airflow:3.0.2
+    entrypoint: /bin/bash -c "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true"
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./dags:/opt/airflow/dags:ro
+      - ./include:/opt/airflow/include:ro
+
+  airflow-scheduler:
+    image: poc_airflow-airflow:3.0.2
+    command: scheduler
+    env_file: .env
+    environment:
+      # TMPDIR no volume mage-tmp (disco, 300GB+): tasks usam tempfile
+      # p/ downloads multi-GB; o /tmp do host é tmpfs de 16GB e lotou
+      # com restos de runs mortas (Errno 28 em 2026-10-10).
+      # Subdir próprio com owner airflow (50000); o /tmp/mage raiz é root.
+      TMPDIR: /tmp/mage/airflow_tmp
+    group_add:
+      - "${DOCKER_GID:-0}"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./include:/opt/airflow/include
+      - ./logs:/opt/airflow/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+      - mage-tmp:/tmp/mage
+      # Secrets backend (scheduler executa/renderiza, api-server resolve p/ UI/API): ro.
+      - ./config/airflow/connections.json:/opt/airflow/secrets/connections.json:ro
+      - ./config/airflow/variables.json:/opt/airflow/secrets/variables.json:ro
+    # 8g: LocalExecutor roda as tasks DENTRO do scheduler; full-mode
+    # (DuckDB 2GB + Polars + downloads) OOMkillava com 4g (2026-10-10).
+    mem_limit: 8g
+
+  airflow-api-server:
+    image: poc_airflow-airflow:3.0.2
+    command: api-server --port 8081
+    env_file: .env
+    ports:
+      - "8081:8081"
+    depends_on:
+      - airflow-scheduler
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      # Secrets backend também na API: sem isso a UI/API não resolve o file backend.
+      # Nota: a listagem da UI mostra só o DB; o espelho no DB (bootstrap [4]) garante visibilidade.
+      - ./config/airflow/connections.json:/opt/airflow/secrets/connections.json:ro
+      - ./config/airflow/variables.json:/opt/airflow/secrets/variables.json:ro
+    mem_limit: 2g
+
+  airflow-dag-processor:
+    image: poc_airflow-airflow:3.0.2
+    command: dag-processor
+    env_file: .env
+    depends_on:
+      - airflow-scheduler
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./include:/opt/airflow/include
+      - ./logs:/opt/airflow/logs
+    mem_limit: 2g
+
+  airflow-triggerer:
+    image: poc_airflow-airflow:3.0.2
+    command: triggerer
+    env_file: .env
+    depends_on:
+      - airflow-scheduler
+    volumes:
+      - ./dags:/opt/airflow/dags
+    mem_limit: 1g
+
+  statsd-exporter:
+    image: prom/statsd-exporter:v0.26.1
+    command: --statsd.mapping-config=/etc/mapping.yml
+    volumes:
+      - ./config/statsd/mapping.yml:/etc/mapping.yml:ro
+    ports:
+      - "8125:9125/udp"
+      - "9102:9102"
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    ports:
+      - "9100:9100"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8082:8080"
+    mem_limit: 512m
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "9090:9090"
+    mem_limit: 1g
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    mem_limit: 1g
+
+volumes:
+  pgdata:
+  miniodata:
+  mage-tmp:
+  promdata:
+  grafanadata:
+
+networks:
+  default:
+    name: kolmeia-net

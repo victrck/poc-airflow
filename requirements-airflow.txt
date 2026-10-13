@@ -1,0 +1,10 @@
+# requirements-airflow.txt — SÓ o que a imagem stock 3.0.2 não traz
+# (stock já tem: fab, docker, amazon, postgres, common-sql, pyarrow, httpx)
+apache-airflow-providers-trino
+duckdb>=1.0.0
+polars==1.30.0
+minio==7.2.0
+pyarrow>=19.0.0
+trino>=0.333.0
+pyiceberg[hive]
+python-dateutil>=2.8.0

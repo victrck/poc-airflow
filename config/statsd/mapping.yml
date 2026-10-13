@@ -1,0 +1,25 @@
+mappings:
+  - match: airflow.dag_processing.processes
+    name: airflow_dag_processing_processes
+  - match: airflow.dagrun.duration.success.*
+    name: airflow_dagrun_duration_success
+    labels:
+      dag: $1
+  - match: airflow.dagrun.duration.failed.*
+    name: airflow_dagrun_duration_failed
+    labels:
+      dag: $1
+  - match: airflow.ti.failures
+    name: airflow_ti_failures
+  - match: airflow.operator.failures.*
+    name: airflow_operator_failures
+    labels:
+      operator: $1
+  - match: airflow.scheduler.heartbeat
+    name: airflow_scheduler_heartbeat
+  - match: airflow.pool.open_slots.*
+    name: airflow_pool_open_slots
+    labels:
+      pool: $1
+  - match: airflow.executor.queued_tasks
+    name: airflow_executor_queued_tasks

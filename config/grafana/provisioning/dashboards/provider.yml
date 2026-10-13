@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: kolmeia
+    folder: Kolmeia
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /etc/grafana/provisioning/dashboards

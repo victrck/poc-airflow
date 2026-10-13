@@ -1,0 +1,9 @@
+{
+  "_doc": "Template versionado. O bootstrap gera variables.json real a partir do .env (nunca commite o real). Só o que a execução das DAGs consome; chaves vazias = usa fallback/default.",
+  "hive_metastore_uri": "thrift://hive-metastore:9083",
+  "minio_bucket_name": "organizacao",
+  "processing_estado": "",
+  "processing_periodo": "",
+  "duckdb_memory_limit": "2GB",
+  "duckdb_threads": "2"
+}

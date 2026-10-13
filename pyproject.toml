@@ -1,0 +1,54 @@
+[project]
+name = "poc-airflow-kolmeia"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+exclude = ["__pycache__", ".venv", "logs", "config/hive/jars"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "S", "AIR301", "B", "A"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"dags/*.py" = ["E402"]
+"dags/bronze_rf.py" = ["E402", "S108"]
+"tests/*.py" = ["S108"]
+# S608 ignorado em silver/pg_load/gold: SQL DuckDB monta paths de arquivos
+# temporários internos + literais escapados (periodo via _lit); entrada de
+# usuário é validada (YYYY-MM/UFs) antes — coberto por teste de escape.
+# S108 em silver: default /tmp/mage/duckdb_tmp é o volume do projeto
+# (já allowlistado em hardcoded-tmp-directory-extend), com override via
+# DUCKDB_TEMP_DIR e fallback p/ system temp em OSError.
+"include/kolmeia/silver.py" = ["S608", "S108"]
+"include/kolmeia/pg_load.py" = ["S608"]
+"include/kolmeia/gold.py" = ["S608"]
+
+[tool.ruff.lint.flake8-bandit]
+hardcoded-tmp-directory-extend = ["/tmp/mage"]
+
+[tool.black]
+line-length = 110
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+explicit_package_bases = true
+mypy_path = "include"
+warn_unused_ignores = true
+[[tool.mypy.overrides]]
+module = ["minio.*", "duckdb.*", "polars.*", "pyarrow.*", "psycopg2.*", "dateutil.*", "airflow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "dags.*"
+ignore_errors = true
+
+[tool.vulture]
+min_confidence = 80
+paths = ["dags", "include", "tests", "docker/ingestao_rf"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
