@@ -82,3 +82,5 @@ tuning DuckDB via `duckdb_*` (`config.duckdb_settings()`). Validação: `connect
 14. Runs manuais em DAGs pausadas ficam `queued` — bootstrap despausa as 5 DAGs.
 15. PyIceberg em HMS zerada exige `create_namespace_if_not_exists` com location `s3a://` antes de `create_table`.
 16. Registro Iceberg idempotente via propriedade `kolmeia_sources` (re-run não duplica).
+17. PG permite `CONNECT` cruzado entre DBs por default (`organizacao_user` conecta em `airflow_db`) — tabelas negam (`permission denied`, verificado 2026-10-13); hardening: `REVOKE CONNECT`. JWT/Fernet idênticos nos 4 serviços Airflow (verificado por hash).
+18. Zero vazamento de segredo em logs de task (`grep -c` por valores reais = 0 no bronze; `hide_sensitive_var_conn_fields=True`); arquivos `config/airflow/*.json` 644 legíveis no host — mesmo nível do `.env`, nunca commitar.

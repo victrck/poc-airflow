@@ -14,7 +14,7 @@ Este README foi escrito para três níveis. Você não precisa ler tudo de uma v
 |---|---|---|---|
 | 🟢 **Iniciante (newbie)** | Nunca usou Airflow/Docker. Só quer subir e ver funcionando. | Seções 1, 2, 3, 4, 5, 11, 13 | ~15 min + 20 min de setup |
 | 🟡 **Intermediário** | Já usa Docker/Python/SQL. Quer entender o pipeline, rodar smoke/full, mexer nas DAGs. | Tudo acima + Seções 6, 7, 8, 9, 12 | ~1 hora |
-| 🔴 **Expert** | Quer operar, dar hardening, entender RBAC a fundo, debugar Iceberg/Trino/JWT, levar para produção. | Tudo + Seções 10, 14, 15, 16, 17 | ~2 horas + prática |
+| 🔴 **Expert** | Quer operar, dar hardening, entender RBAC a fundo, debugar Iceberg/Trino/JWT, levar para produção. | Tudo + Seções 10, 14, 15, 16 | ~2 horas + prática |
 
 > ⚠️ **Sobre senhas neste README:** mantemos as credenciais **default locais** (`admin/admin`, `minioadmin/minioadmin123`, `kolmeia_*123`) de propósito, para fins didáticos. Elas **só valem para ambiente local**. Troque no primeiro uso real. Veja Seção 10. Nunca commite o arquivo `.env` real — ele está no `.gitignore`.
 
@@ -43,8 +43,8 @@ Ou seja: 1.359 CNAEs (códigos de atividade econômica) do Maranhão, idênticos
 **O que este projeto NÃO é (para alinhar expectativa):**
 
 - Não é produção em nuvem. É **local via Docker Compose**, validado em máquina com **32 GB RAM**.
-- Modo `smoke` (pequeno: só `cnaes/MA`) está pronto e medido. Modo `full` validado para **1 UF (MA) em 2026-10-10** fim a fim (silver 1.1GB empresas + 518MB socios + splits MA → `dados_empresas` 1.089.670 linhas MA + `gold.empresas_ma` 1.056.100). Full **27 UFs** segue pesado (multi-GB por UF, exige tempo/disco; rode fatiado e com `pool heavy_duckdb=1`).
-- No smoke, o processamento pesado é **DuckDB local (2 GB / 2 threads)** dentro do worker. O Trino **lê e valida** o resultado via Iceberg. Não é "Trino processa tudo" no smoke.
+- Modo `smoke` (pequeno: só `cnaes/MA`) está pronto e medido. Modo `full` validado fim a fim: **1 UF (MA) em 2026-10-10** (silver 1.1GB empresas + 518MB socios → `dados_empresas` 1.089.670 linhas MA) e **27 UFs em 2026-10-11** (`dados_empresas` 73.193.186 linhas, com `pool heavy_duckdb=1` + `COPY STDIN` streaming). Full 27 UFs é pesado (multi-GB por UF, ~1–2h serializado, ~34GB de temp); rode fatiado se a máquina for menor. **Gold é 1 mart por execução (só a 1ª UF do `conf`):** `gold.empresas_ma` tinha 1.056.100 (MA, 2026-10-10) e hoje tem 161.523 (AC, após o full-27) — para outra UF, rode `gold_marts` full com aquela UF.
+- No smoke, o processamento pesado é **DuckDB local (defaults `2GB / 2 threads`, ajustáveis via Variables `duckdb_memory_limit`/`duckdb_threads`)** dentro do worker. O Trino **lê e valida** o resultado via Iceberg. Não é "Trino processa tudo" no smoke.
 
 Documentos de origem do plano (contexto histórico, parcialmente desatualizado): `plano_de_trabalho_consolidado.md` e `docs_roteiro_videos.md`. O roteiro de vídeos **não está embutido aqui** — veja link na Seção 12.
 
@@ -119,7 +119,7 @@ graph TB
 | `grafana` | `http://grafana:3000` | :3000 | Dashboard `Kolmeia SRE — Pipelines` (uid `kolmeia-sre`). Provisionado em `config/grafana/provisioning/`. |
 | Receita Federal DAV | `https://arquivos.receitafederal.gov.br/.../YggdBLfdninEJX9/YYYY-MM/` | — | Fonte oficial. Discovery via `PROPFIND` + `HEAD/GET` com fallback de 6 meses. |
 
-Limites de memória no compose (somam ~23 GB + overhead — por isso 32 GB): Trino 6g, scheduler 8g (era 4g; LocalExecutor roda tasks dentro do scheduler e o full-mode OOMkillava — 2026-10-10), postgres/minio/hive/api/dag-processor 2g cada, triggerer/prom/grafana 1g cada, cAdvisor 512m.
+Limites de memória no compose (somam ~27.5 GB + overhead — por isso 32 GB): Trino 6g, scheduler 8g (era 4g; LocalExecutor roda tasks dentro do scheduler e o full-mode OOMkillava — 2026-10-10), postgres/minio/hive/api-server/dag-processor 2g cada, triggerer/prometheus/grafana 1g cada, cAdvisor 512m. (`statsd-exporter` e `node-exporter` sem limite; `minio-init`/`airflow-init` são one-shot.)
 
 Rede fixa: `networks.default.name=kolmeia-net`. A DAG Bronze usa `network_mode="kolmeia-net"` para o container efêmero enxergar o MinIO. Sem nome fixo, o prefixo do projeto muda por máquina e quebra.
 
@@ -166,7 +166,8 @@ O `.env.example` já traz os defaults locais:
 - Airflow: `LocalExecutor`, `FabAuthManager` (RBAC por DAG), `EXECUTION_API_SERVER_URL=http://airflow-api-server:8081/execution/`, StatsD ligado.
 - Postgres: `airflow/airflow`, `hive/hive`, `organizacao_user/organizacao_password`.
 - MinIO: `minioadmin/minioadmin123`, bucket `organizacao`.
-- Processamento: `PROCESSING_ESTADO=MA`, `MAGE_TEMP_DIR=/tmp/mage`, `DUCKDB_MEMORY_LIMIT_GB=2.0`.
+- Processamento: `PROCESSING_ESTADO=MA`, `MAGE_TEMP_DIR=/tmp/mage`, `TMPDIR=/tmp/mage/airflow_tmp` (só scheduler), `DUCKDB_MEMORY_LIMIT_GB=2.0` + `DUCKDB_THREADS=2` (alimentam as Variables `duckdb_*`), `TRINO_*` (alimentam a Connection `trino_default`).
+- Secrets backend: `AIRFLOW__SECRETS__BACKEND=LocalFilesystemBackend` + `BACKEND_KWARGS` (`config/airflow/*.json`, mount ro no scheduler e na api-server). Só execução vai ao menu: 3 Connections + 6 Variables (ver Seção 10); o resto do `.env` (40 chaves) é infra.
 
 ### Passo 2 — Bootstrap zero-touch (recomendado)
 
@@ -180,10 +181,12 @@ O que ele faz, em ordem (ver `scripts/bootstrap.sh`):
 
 ```
 [0] checa docker + compose
-[1] cria .env se faltar; gera JWT_SECRET, FERNET_KEY e DOCKER_GID
+[1] cria .env se faltar; gera JWT_SECRET, FERNET_KEY e DOCKER_GID; completa `AIRFLOW__SECRETS__*` do `.env.example`
+[1b] gera `config/airflow/connections.json` + `variables.json` do `.env` (chmod 644 — scheduler é uid 50000)
 [2] build poc_airflow-airflow:3.0.2 (Dockerfile.airflow) + poc_airflow-ingestao_rf:latest
-[3] docker compose up -d; espera postgres/minio healthy + airflow-init exit 0
-[4] secrets backend (gera `config/airflow/*.json` do `.env`, limpa legados do DB), pool heavy_duckdb=1 (serializado; era 2 — OOM no full-mode 2026-10-10)
+[3] docker compose up -d; espera postgres/minio healthy + airflow-init exit 0 (com `-a`, one-shot some do `ps` padrão no compose v5+)
+[4] pool heavy_duckdb=1 + espelha segredos no DB p/ a UI listar (a UI mostra só o DB por design; a execução usa o arquivo) + limpa `minio_root_*` legadas
+[4b] prova do secrets backend sem imprimir segredo (`connections get minio_s3`)
 [5] aplica RBAC (rbac_kolmeia.sh dentro do scheduler)
 [6] despausa as 5 DAGs
 [7] rotaciona token MinIO p/ Prometheus
@@ -214,7 +217,7 @@ make gates
 # = make lint + typecheck + test
 # lint: ruff + black --check + flake8 + vulture
 # typecheck: mypy include (strict)
-# test: pytest tests -q (7 testes, stores fake, sem MinIO/PG)
+# test: pytest tests -q (19 testes, stores fake + Parquets mínimos, sem MinIO/PG)
 ```
 
 Esperado: tudo verde.
@@ -283,7 +286,7 @@ docker compose down
 
 ## 6. 🟡 Pipeline de dados — as 5 DAGs em detalhe
 
-Todas ficam em `dags/` e usam `params={"modo":"smoke","periodo":"","estado":"MA"}`. `schedule=None`, `catchup=False` (só manual ou via trigger).
+As 4 DAGs de dados ficam em `dags/` e usam `params={"modo":"smoke","periodo":"","estado":"MA"}`. `schedule=None`, `catchup=False` (só manual ou via trigger). A `financeiro_dummy` não tem `params` (só RBAC).
 
 ```
 bronze_rf_to_minio ──TriggerDagRun──▶ silver_zip_to_parquet ──▶ postgres_carga ──▶ gold_marts
@@ -300,7 +303,7 @@ Todas as 4 DAGs de dados declaram o mesmo `params` (`dags/*.py:20`), mas o **efe
 |---|---|---|---|---|
 | `modo` | `"smoke"` \| `"full"` | `"smoke"` | `RunParams.from_dag_params`; outro valor → `ValueError: modo inválido` | `smoke` trava slice mínimo (`datasets=("cnaes",)`, `ufs=("MA",)`, ignora `estado`). `full` expande (`datasets=4`, `ufs=resolve_ufs(...)`). |
 | `periodo` | `""` \| `"YYYY-MM"` (ex. `"2026-09"`) | `""` | `validate_periodo` regex `\d{4}-\d{2}`; `"09-2026"` → `ValueError` | `""` **não é mês atual**: é `resolve_periodo_or_latest` — último mês com marker `_SUCCESS` (até 6 meses p/ trás). Explícito exige marker existente, senão `ValueError: Bronze sem _SUCCESS`. |
-| `estado` | `""` \| `"MA"` \| `"MA,SP"` \| lista das 27 UFs (separadores `,;|`) | `"MA"` | Validado contra `DEFAULT_UFS_BRASIL` (27 UFs); `"XX"` → `ValueError: UFs inválidas` | Só tem efeito em `modo=full` (smoke ignora e fixa `MA`). Prioridade: `params.estado` > env `PROCESSING_ESTADO` > todas as 27 UFs. |
+| `estado` | `""` \| `"MA"` \| `"MA,SP"` \| lista das 27 UFs (separadores `,;|`) | `"MA"` | Validado contra `DEFAULT_UFS_BRASIL` (27 UFs); `"XX"` → `ValueError: UFs inválidas` | Só tem efeito em `modo=full` (smoke ignora e fixa `MA`). Prioridade: `params.estado` > Variable `processing_estado` / env `PROCESSING_ESTADO` > todas as 27 UFs. |
 
 Exemplo de `--conf` (colar no trigger):
 
@@ -313,7 +316,7 @@ Exemplo de `--conf` (colar no trigger):
 --conf '{"modo":"full","periodo":"2026-09","estado":"AC,AL,AP,AM,BA,CE,DF,ES,GO,MA,MT,MS,MG,PA,PB,PR,PE,PI,RJ,RN,RS,RO,RR,SC,SP,SE,TO"}'
 ```
 
-> ⚠️ **Full todas as UFs = roadmap pesado.** Baixa dezenas de GB da RF (`Estabelecimentos0..9.zip`, `Socios*.zip`), exige disco/RAM/rede e demora horas. Com `periodo:""` ele resolve o latest com `_SUCCESS` em vez de fixar mês. Com `estado:""` ele **não** vai direto para todas: cai no env `PROCESSING_ESTADO` (default `MA` no `.env.example`); só dá todas se o env também estiver vazio. Por isso o exemplo acima lista as 27 explicitamente — é a forma determinística.
+> ⚠️ **Full todas as UFs: validado, mas pesado.** O exemplo acima foi executado em 2026-10-11 (73.193.186 linhas, ~1–2h serializado, ~34GB de temp em `/tmp/mage/airflow_tmp`). Baixa dezenas de GB da RF (`Estabelecimentos0..9.zip`, `Socios*.zip`), exige disco/RAM/rede. Com `periodo:""` ele resolve o latest com `_SUCCESS` em vez de fixar mês. Com `estado:""` ele **não** vai direto para todas: cai na Variable `processing_estado` / env `PROCESSING_ESTADO` (default `MA` no `.env.example`); só dá todas se ambos estiverem vazios. Por isso o exemplo acima lista as 27 explicitamente — é a forma determinística.
 
 #### Envs que afetam os params (fallback)
 
@@ -323,8 +326,8 @@ Exemplo de `--conf` (colar no trigger):
 | `PROCESSING_ESTADO` | `MA` | Se `params.estado` vazio: usa o env se preenchido, senão todas as 27 UFs. É por isso que `estado:""` sozinho ainda dá `MA` no setup padrão. |
 | `UFS_BRASIL` | `MA` | Documental / paridade Mage; a resolução real usa `PROCESSING_ESTADO`. |
 | `MAGE_TEMP_DIR` | `/tmp/mage` | Temp do download/transform (volume `mage-tmp`). Não é param de DAG, mas afeta disco. |
-| `TMPDIR` (só scheduler) | `/tmp/mage` | Todo `tempfile` das tasks vai para o volume em disco; o `/tmp` do host é tmpfs 16GB e lotou no full-mode (Errno 28 em 2026-10-10). |
-| `DUCKDB_MEMORY_LIMIT_GB` / `DUCKDB_THREADS` | `2.0` / `2` | Documental; o código fixa `SET memory_limit='2GB'` + `threads=2` por conexão em `silver.py`/`gold.py`. |
+| `TMPDIR` (só scheduler) | `/tmp/mage/airflow_tmp` | Todo `tempfile` das tasks vai para o volume em disco; o `/tmp` do host é tmpfs 16GB e lotou no full-mode (Errno 28 em 2026-10-10). |
+| `DUCKDB_MEMORY_LIMIT_GB` / `DUCKDB_THREADS` | `2.0` / `2` | Alimentam as Variables `duckdb_memory_limit`/`duckdb_threads`; o código lê via `config.duckdb_settings()` (fail-safe `2GB/2`) em `silver.py`/`gold.py`/`pg_load.py`. |
 
 #### Ficha 1/5 — `bronze_rf_to_minio` (1 container por dataset, não por arquivo)
 
@@ -419,7 +422,7 @@ flowchart LR
 - **Operador:** `DockerOperator.partial(...).expand(command=chosen)` — computação efêmera (sobe container, baixa, morre, `auto_remove="success"`).
 - **Task `select_commands`:** monta args. Smoke → 1 comando (`--dataset cnaes`); full → 4 (`cnaes, empresas, estabelecimentos, socios`).
 - **Imagem:** `poc_airflow-ingestao_rf:latest` (`docker/ingestao_rf/Dockerfile`: `python:3.11-slim` + `minio+httpx`, `ENTRYPOINT python /app/script.py`). **Atenção expert:** o comando do `DockerOperator` deve ser **só os args** (`--dataset ...`), sem prefixar `python /app/script.py` — prefixo duplo dá exit 2.
-- **Rede/volumes/env:** `network_mode="kolmeia-net"`, mount `mage-tmp:/tmp/mage`, env `MINIO_LOCAL_DOMAIN=minio:9000` + Variables Airflow (sem hardcode).
+- **Rede/volumes/env:** `network_mode="kolmeia-net"`, mount `mage-tmp:/tmp/mage`, env com fonte única (`MINIO_LOCAL_DOMAIN` do `extra_dejson` da `minio_s3`, creds de `conn.minio_s3`, bucket de `var.minio_bucket_name` — sem hardcode).
 - **Pool:** `heavy_duckdb` (limita concorrência pesada).
 - **Script (`script.py`):** discovery `PROPFIND` no DAV da RF, fallback até 6 meses, `HEAD/GET` probe, download em streaming (timeout 600s), `zipfile.is_zipfile`, resume local, upload com retry 3× + verificação de tamanho, marker `bronze/<ds>/_control/_SUCCESS_<YYYYMMDD>`. Idempotente: se marker existe, `skip`.
 - **Saída:** `s3://organizacao/bronze/<dataset>/*.zip` + marker. Em seguida `trigger_silver` (`trigger_rule="none_failed"`).
@@ -428,7 +431,7 @@ flowchart LR
 
 - **Tasks:** `select_datasets` (smoke→`["cnaes"]`, full→4) + `silver_one.expand(dataset=chosen)` (`@task(pool="heavy_duckdb")`, Dynamic Mapping do Airflow 3).
 - **`silver_one` por dataset:** resolve período (explicit `params.periodo` ou fallback latest `_SUCCESS` — ver `RunParams`), baixa ZIPs do MinIO, chama `kolmeia.silver.silver_transform`, registra no Iceberg via `register_local_parquets`, escreve `silver/<ds>/_control/_SUCCESS_*`.
-- **`silver_transform` (`include/kolmeia/silver.py`):** extrai 1º CSV de cada ZIP re-codificando `ISO-8859-1→UTF-8`, converte com **Polars batched (250k linhas) + PyArrow ZSTD**, filtra com DuckDB (`REJECT_WHERE`, ex. `length(codigo)=7` p/ cnaes), e se `estabelecimentos` faz `split_by_uf` (1 conexão DuckDB fresca por UF, `memory_limit 2GB`, `threads 2`).
+- **`silver_transform` (`include/kolmeia/silver.py`):** extrai 1º CSV de cada ZIP re-codificando `ISO-8859-1→UTF-8`, converte com **Polars batched (250k linhas) + PyArrow ZSTD**, une multi-parts com `read_parquet([...])` (lista — N args posicionais quebram no full), filtra com DuckDB (`REJECT_WHERE`, ex. `length(codigo)=7` p/ cnaes), e se `estabelecimentos` faz `split_by_uf` (1 conexão DuckDB fresca por UF, tuning via `duckdb_settings()`).
 - **Colunas:** `COLUMNS` por dataset (cnaes tem 2: `codigo, descricao`; estabelecimentos tem 30; etc.).
 - **Saída:** `silver/<ds>/*_<YYYYMMDD>.parquet` + registro `iceberg.silver.meta_<ds>`.
 
@@ -437,7 +440,7 @@ flowchart LR
 - **Tasks:** `load_cnaes` (sempre) + `select_ufs` + `load_dados_empresas.expand(uf=ufs)`.
 - **Smoke:** `select_ufs` retorna `[]` (pula `dados_empresas`, só valida `cnaes`). **Full:** expande UFs via `resolve_ufs` (ex. `MA,SP` ou todas as 27).
 - **`load_cnaes` (`pg_load.py`):** normaliza Parquet com DuckDB, `TRUNCATE organizacao.cnaes` + `executemany INSERT` (com `periodo`). Credenciais via `io_pg.connect` (Connection `postgres_organizacao`, sem hardcode).
-- **`load_dados_empresas`:** monta SQL com `build_dados_empresas_copy_sql` (JOIN `estabelecimentos+empresas+cnaes`, 17 colunas, `periodo` escapado com `''` contra injeção — coberto por teste), gera Parquet por UF com DuckDB, `DELETE WHERE uf+periodo` + insert (idempotente por partição).
+- **`load_dados_empresas`:** monta SQL com `build_dados_empresas_csv_sql` (mesmo SELECT de 17 colunas do `..._copy_sql`, `periodo` escapado com `''` contra injeção — coberto por teste), gera **CSV** por UF com DuckDB (streaming) + `COPY ... FROM STDIN` (pico Python ~MB; o `to_pylist`+`executemany` antigo OOMkillava UFs grandes como SP), `DELETE WHERE uf+periodo` + insert (idempotente por partição), tuning via `duckdb_settings()`.
 - **Saída:** tabelas `organizacao.cnaes`, `organizacao.dados_empresas`.
 
 ### DAG 4/4 — `gold_marts` (`dags/gold_marts.py`)
@@ -511,7 +514,7 @@ docker compose exec airflow-scheduler airflow tasks test <dag> <task>  # in-proc
 docker compose exec airflow-scheduler airflow config get-value api_auth jwt_secret
 docker compose exec airflow-scheduler airflow connections add ID --conn-type T --conn-host H --conn-login U --conn-password P
 docker compose exec airflow-scheduler airflow variables set KEY VAL
-docker compose exec airflow-scheduler airflow pools set heavy_duckdb 2 "desc"
+docker compose exec airflow-scheduler airflow pools set heavy_duckdb 1 "desc"
 ```
 
 Recursos descobertos no banco (para `add-perms`): `DAG:<id>`, `DAG Run:<id>`, `DAGs`, `DAG Code`, `Task Instances`, `Task Logs`, `Variables`, `Connections`, `Website` (+ `can_read/can_edit/can_create/can_delete`).
@@ -578,7 +581,7 @@ Teste manual na UI (http://localhost:8081): logue como `usr_read` (botão Trigge
 
 ## 9. 🟡 Qualidade — `make gates` explicado para cada nível
 
-- **🟢 `make test` (`pytest tests -q`):** 7 testes sem infra (stores fake). Garantem: DAGs parseiam e `dag_id`s estáveis (RBAC sobrevive a refactor), sem senha hardcoded, triggers encadeados (`>> trigger_`), `RunParams` smoke/full, fallback latest, escape de `periodo` contra SQL injection, formato `_control/_SUCCESS`, idempotência `pending_keys`.
+- **🟢 `make test` (`pytest tests -q`):** 19 testes sem infra (stores fake + Parquets mínimos). Garantem: DAGs parseiam e `dag_id`s estáveis (RBAC sobrevive a refactor), sem segredo/default hardcoded (inclui endpoint/warehouse literais), bronze via conn (`conn.minio_s3` + `extra_dejson`, sem `minio_root_*`), triggers encadeados (`>> trigger_`), `RunParams` smoke/full, fallback latest, escape de `periodo` (builders parquet + CSV), formato `_control/_SUCCESS`, idempotência `pending_keys`, união multi-part (`read_parquet([...])`), COPY streaming por UF, precedência Variable>env, `warehouse_prefix()` por bucket, `duckdb_settings()` defaults/overrides.
 - **🟡 `make lint`:** `ruff check` (regras E,F,I,UP,S,AIR301,B,A; 110 cols), `black --check`, `flake8`, `vulture` (código morto, `min_confidence 80`).
 - **🔴 `make typecheck`:** `mypy include` em modo `strict` (ignora imports sem stubs de `airflow/minio/duckdb/polars/pyarrow/psycopg2/dateutil`).
 
@@ -593,10 +596,10 @@ Rode `make gates` antes de cada PR. CI ideal: mesmo comando.
 - **Imagem Airflow (`Dockerfile.airflow`):** `FROM apache/airflow:3.0.2-python3.11` + `build-essential/curl` + `requirements-airflow.txt` (só o que a stock não traz: `trino, duckdb, polars==1.30.0, minio, pyarrow>=19, pyiceberg[hive]`). Stock já tem `fab, docker, amazon, postgres, common-sql, httpx`.
 - **Executor:** `LocalExecutor` com `docker.sock` montado + `group_add: DOCKER_GID`. Paralelismo 8 (`AIRFLOW__CORE__PARALLELISM=8`).
 - **JWT/Fernet compartilhados:** `AIRFLOW__API_AUTH__JWT_SECRET` e `FERNET_KEY` gerados no bootstrap e compartilhados via `.env`. Sem isso, cada container gera um e tasks dão 403 com log vazio.
-- **Connections seed:** `minio_s3` (aws + `endpoint_url http://minio:9000`), `trino_default` (trino://trino:8080, catalog `iceberg`, schema `silver`), `postgres_organizacao` (postgres://postgres:5432/organizacaodb). Código lê via `BaseHook.get_connection` (`io_minio.py`, `io_pg.py`) com fallback para env em testes — nunca hardcode.
+- **Connections (file backend + espelho no DB p/ a UI listar):** `minio_s3` (aws + `endpoint_url http://minio:9000` — fonte única do endpoint do bronze), `trino_default` (trino://trino:8080, catalog `iceberg`, schema `silver`), `postgres_organizacao` (postgres://postgres:5432/organizacaodb). Código lê via `BaseHook.get_connection` (`io_minio.py`, `io_pg.py`, `trino_meta.py`) ou `TrinoHook`/`{{ conn.* }}` — nunca hardcode. **Variables:** `hive_metastore_uri`, `minio_bucket_name` (fonte do `warehouse_prefix()`), `processing_estado?`/`processing_periodo?`, `duckdb_memory_limit`/`duckdb_threads`.
 - **Hive:** `apache/hive:4.0.0`, `SERVICE_NAME=metastore`, `DB_DRIVER=postgres`, `HADOOP_CLASSPATH=/opt/hadoop/share/hadoop/tools/lib/*` (sem isso, S3A quebra), locations sempre `s3a://`.
 - **Trino catalogs:** `iceberg.properties` + `hive.properties` com `fs.native-s3.enabled=true`, `s3.path-style-access=true`, endpoint `http://minio:9000`.
-- **PyIceberg:** `thrift://hive-metastore:9083`, `create_namespace_if_not_exists` com location `s3a://` antes de `create_table` (HMS zerada exige), tabelas sob `s3a://organizacao/warehouse/<schema>/<tabela>/` (string SQL como `StringType` por simplicidade), `append` de Arrow direto (Trino 455 não tem `system.add_files`; `add_files` do PyIceberg tem quirk de unicidade — não usado).
+- **PyIceberg:** `hive_metastore_uri` (Variable), `create_namespace_if_not_exists` com location `s3a://` antes de `create_table` (HMS zerada exige), tabelas sob `warehouse_prefix()` (`s3a://<bucket>/warehouse/<schema>/<tabela>/`, derivado de `minio_bucket_name`; string SQL como `StringType` por simplicidade), `append` de Arrow direto (Trino 455 não tem `system.add_files`; `add_files` do PyIceberg tem quirk de unicidade — não usado).
 - **Jinja:** não renderiza dentro de `.map(lambda)` — comandos montados em `@task` Python puro (`select_commands`, `select_datasets`, `select_ufs`).
 - **Pool `heavy_duckdb=1`:** serializa DuckDB pesado (2 simultâneos OOMkillavam o scheduler em 2026-10-10).
 
@@ -607,7 +610,7 @@ Rode `make gates` antes de cada PR. CI ideal: mesmo comando.
 - Token MinIO para Prometheus é rotacionado no bootstrap (`mc admin prometheus generate` reescreve `bearer_token` em `prometheus.yml` e dá `up -d prometheus`). Sem token, target MinIO fica 403/down — esperado.
 - Trino 455 sem endpoint Prometheus: saúde via `gold.check_silver_meta` + `up` do container + cAdvisor/node.
 
-### 10.3 As 16 armadilhas reais (resumo de `docs/operacao.md` — leia o arquivo para prova completa)
+### 10.3 As 18 armadilhas reais (resumo de `docs/operacao.md` — leia o arquivo para prova completa)
 
 1. Executor apontava `localhost:8080` (default `{BASE_URL}/execution/`) → fix `EXECUTION_API_SERVER_URL=http://airflow-api-server:8081/execution/`.
 2. `jwt_secret` diferente por container → 403 com log vazio → fix secret compartilhado.
@@ -630,7 +633,7 @@ Rode `make gates` antes de cada PR. CI ideal: mesmo comando.
 
 ## 11. 🟢🔴 Segurança e próximos passos para produção
 
-- **Nunca commite `.env`.** `.gitignore` já cobre `.env`, `__pycache__/`, `*.pyc`, `logs/`.
+- **Nunca commite `.env` nem `config/airflow/connections.json` / `variables.json` (reais).** `.gitignore` cobre `.env`, os 2 JSONs reais (mantém os `.example.json`), `__pycache__/`, `*.pyc`, `logs/` e temporários (`*.parquet`, `*.zip`, `*.csv`, `duckdb_spill/` etc.).
 - Troque no primeiro login: `admin/admin`, `kolmeia_*123`, `minioadmin123`, `organizacao_password`, `hive/hive`.
 - Fora do local: segredos em Vault/SSM, não em `.env`; rode `CeleryExecutor` ou `KubernetesExecutor` (LocalExecutor não escala); TLS na API; backup de `pgdata`/`miniodata`; `schedule` real nas DAGs com `catchup=False` + SLA + alertas no Grafana.
 - `postgres-init/01-init-dbs.sh` cria `hive`, `organizacao_user`, schemas `organizacao` e `gold` — em prod, use Terraform/migração versionada, não init script com senha fixa.
@@ -639,7 +642,7 @@ Rode `make gates` antes de cada PR. CI ideal: mesmo comando.
 
 ## 12. 📚 Documentos relacionados (não duplicados aqui)
 
-- `docs/operacao.md` — URLs de integração + CLI + 16 armadilhas com prova. **Leitura obrigatória para expert.**
+- `docs/operacao.md` — URLs de integração + CLI + 18 armadilhas com prova. **Leitura obrigatória para expert.**
 - `docs/rbac.md` — matriz RBAC detalhada + teste manual UI.
 - `docs_roteiro_videos.md` — roteiro Vídeo 1 (fundamentos 2h) e Vídeo 2 (prática + RBAC + comparativo 4h). **Não embutido neste README por decisão de escopo — consulte o arquivo.**
 - `plano_de_trabalho_consolidado.md` — plano original de 64h (contexto histórico; nomes como `lakehouse`/`empresasbr_pipeline.py` estão desatualizados frente ao `organizacao`/5 DAGs atuais).
@@ -681,7 +684,7 @@ poc_airflow/
 │   └── statsd/                  ← mapping.yml
 ├── postgres-init/               ← 01-init-dbs.sh (3 DBs + 2 schemas)
 ├── scripts/                     ← bootstrap.sh, rbac_kolmeia.sh, rbac_verify.sh, login_proof.sh
-├── tests/                       ← test_dag_integrity.py (7 testes, sem infra)
+├── tests/                       ← 4 arquivos, 19 testes, sem infra (integrity + silver_union + pg_load_copy + secrets_resolution)
 ├── docs/                        ← operacao.md, rbac.md
 ├── docs_roteiro_videos.md       ← roteiro V1+V2 + queries demo (1359)
 ├── plano_de_trabalho_consolidado.md ← plano 64h original (histórico)
@@ -777,4 +780,4 @@ docker compose exec -T minio mc ls --recursive local/organizacao/ | head -20
 
 ---
 
-> Última auditoria: compose + 5 DAGs + `include/kolmeia/*` + `scripts/*` + `config/*` + `docs/*` + testes (7 passing via `make gates`) + smoke medido 1359 linhas (2026-09). Dúvidas ou erro neste README? Abra uma issue citando `file:linha` e a saída do comando que quebrou.
+> Última auditoria (2026-10-13): compose (15 serviços, scheduler 8g, pool 1) + 5 DAGs + `include/kolmeia/*` (conn/Variable-first, COPY streaming, `duckdb_settings`, `warehouse_prefix`) + `scripts/*` + `config/*` (3 conns + 6 vars) + `docs/*` + 19 testes verdes via `make gates` + smoke 1359 (2026-09) + full 27 UFs 73.193.186 linhas (2026-10-11). Gold = 1 mart por execução (só a 1ª UF). Dúvidas ou erro neste README? Abra uma issue citando `file:linha` e a saída do comando que quebrou.
